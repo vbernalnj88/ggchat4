@@ -988,7 +988,8 @@ async function exportMessagesBySession() {
       return;
     }
     
-    let exportedCount = 0;
+    // Create a new JSZip instance
+    const zip = new JSZip();
     
     for (const session of exportData.sessions) {
       let textContent = `Session: ${session.sessionId}\n`;
@@ -1017,27 +1018,23 @@ async function exportMessagesBySession() {
       const safeSessionId = session.sessionId.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
       const filename = `session_${safeSessionId}.txt`;
       
-      // Create and download individual file for each session
-      const blob = new Blob([textContent], { type: 'text/plain' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      
-      exportedCount++;
-      
-      // Small delay between downloads to avoid browser blocking
-      if (exportedCount < exportData.sessions.length) {
-        await new Promise(resolve => setTimeout(resolve, 300));
-      }
+      // Add file to zip
+      zip.file(filename, textContent);
     }
     
-    console.log('[Export] Successfully exported sessions:', exportedCount);
-    alert(`Exported ${exportedCount} session(s) as text files.`);
+    // Generate the zip file and download it
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'chat_sessions.zip';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    console.log('[Export] Successfully exported sessions:', exportData.sessions.length);
+    alert(`Exported ${exportData.sessions.length} session(s) as a single ZIP file.`);
   } catch (error) {
     console.error('[Export] Error exporting messages by session:', error);
     alert('Error exporting messages: ' + error.message);

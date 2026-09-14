@@ -1,0 +1,548 @@
+// Background service worker for Chat Archiver extension
+const SERVER_URL = 'http://localhost:7337';
+
+// Handle messages from content script and popup
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'syncChat') {
+    handleSyncChat(request)
+      .then(response => sendResponse(response))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true; // Keep message channel open for async response
+  }
+  
+  if (request.action === 'getUsers') {
+    handleGetUsers()
+      .then(users => sendResponse({ success: true, users }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  
+  if (request.action === 'getUserSessions') {
+    handleGetUserSessions(request.username)
+      .then(sessions => sendResponse({ success: true, sessions }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  
+  if (request.action === 'getSessionMessages') {
+    handleGetSessionMessages(request.sessionId)
+      .then(sessionData => sendResponse({ success: true, messages: sessionData.messages }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  
+  if (request.action === 'getUserProfile') {
+    handleGetUserProfile(request.username)
+      .then(profile => sendResponse({ success: true, profile }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  
+  if (request.action === 'updateUserProfile') {
+    handleUpdateUserProfile(request.username, request.profileData)
+      .then(profile => sendResponse({ success: true, profile }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  
+  if (request.action === 'deleteUser') {
+    handleDeleteUser(request.username)
+      .then(response => sendResponse(response))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  
+  if (request.action === 'importChatData') {
+    handleImportChatData(request.data)
+      .then(response => sendResponse(response))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  
+  if (request.action === 'exportAllData') {
+    handleExportAllData()
+      .then(data => sendResponse({ success: true, data }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  
+  if (request.action === 'importExportedData') {
+    handleImportExportedData(request.data)
+      .then(response => sendResponse(response))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+});
+
+// Handle chat sync
+async function handleSyncChat(data) {
+  const { sessionId, messages, url, timestamp } = data;
+  
+  try {
+    // Store in Chrome storage
+    const storageKey = `session_${sessionId}`;
+    const existingData = await chrome.storage.local.get([storageKey]);
+    
+    const storedMessages = existingData[storageKey] || { messages: [], users: new Set(), userAliases: {} };
+    
+    // Merge messages and track unique users by their stable authorId (@username)
+    const allMessages = [...storedMessages.messages];
+    const userSet = new Set(storedMessages.users || []);
+    const userAliases = storedMessages.userAliases || {};  // Maps authorId -> display names
+    
+    messages.forEach(msg => {
+      // Check if message already exists
+      const exists = allMessages.some(m => m.id === msg.id);
+      if (!exists) {
+        allMessages.push(msg);
+        
+        // Use authorId (stable @username) if available, otherwise fall back to author (display name)
+        const userId = msg.authorId || msg.author;
+        if (userId) {
+          userSet.add(userId);
+          
+          // Track the mapping between authorId and display name
+          if (msg.authorId && msg.author) {
+            if (!userAliases[msg.authorId]) {
+              userAliases[msg.authorId] = new Set();
+            }
+            userAliases[msg.authorId].add(msg.author);
+          }
+        } else if (msg.author) {
+          // Fallback for messages without authorId
+          userSet.add(msg.author);
+        }
+      }
+    });
+    
+    // Convert Sets to Arrays for storage
+    const serializedUserAliases = {};
+    Object.keys(userAliases).forEach(key => {
+      serializedUserAliases[key] = Array.from(userAliases[key]);
+    });
+    
+    const sessionData = {
+      sessionId,
+      url,
+      lastSynced: timestamp,
+      messages: allMessages,
+      users: Array.from(userSet),
+      userAliases: serializedUserAliases
+    };
+    
+    await chrome.storage.local.set({ [storageKey]: sessionData });
+    
+    // Also store a list of all sessions
+    const allSessions = await chrome.storage.local.get(['allSessions']);
+    const sessionsList = allSessions.allSessions || [];
+    
+    if (!sessionsList.includes(sessionId)) {
+      sessionsList.push(sessionId);
+      await chrome.storage.local.set({ allSessions: sessionsList });
+    }
+    
+    // Send to local server
+    try {
+      const serverResponse = await fetch(`${SERVER_URL}/api/sync`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(sessionData)
+      });
+      
+      if (serverResponse.ok) {
+        console.log('[Chat Archiver] Server sync successful');
+      } else {
+        console.warn('[Chat Archiver] Server sync returned non-OK status');
+      }
+    } catch (serverError) {
+      console.warn('[Chat Archiver] Server unavailable, data stored locally only:', serverError.message);
+    }
+    
+    return {
+      success: true,
+      messageCount: allMessages.length,
+      userCount: userSet.size
+    };
+  } catch (error) {
+    console.error('[Chat Archiver] Sync failed:', error);
+    throw error;
+  }
+}
+
+// Get all users from all sessions
+async function handleGetUsers() {
+  try {
+    const allSessions = await chrome.storage.local.get(['allSessions']);
+    const sessionsList = allSessions.allSessions || [];
+    
+    const userSet = new Set();
+    const userSessionsMap = new Map();
+    const userDisplayNamesMap = new Map();  // Maps authorId to most recent display name
+    
+    for (const sessionId of sessionsList) {
+      const sessionData = await chrome.storage.local.get([`session_${sessionId}`]);
+      const data = sessionData[`session_${sessionId}`];
+      
+      if (data && data.users) {
+        data.users.forEach(userId => {
+          userSet.add(userId);
+          if (!userSessionsMap.has(userId)) {
+            userSessionsMap.set(userId, []);
+          }
+          userSessionsMap.get(userId).push({
+            sessionId,
+            lastSynced: data.lastSynced,
+            messageCount: data.messages?.length || 0
+          });
+          
+          // Track display names from userAliases
+          if (data.userAliases && data.userAliases[userId]) {
+            const aliases = data.userAliases[userId];
+            // Use the most recent alias as the display name
+            userDisplayNamesMap.set(userId, aliases[aliases.length - 1]);
+          }
+        });
+      }
+    }
+    
+    const users = Array.from(userSet).map(userId => ({
+      userId,  // Stable @username identifier
+      username: userDisplayNamesMap.get(userId) || userId,  // Display name (most recent alias or userId)
+      sessions: userSessionsMap.get(userId) || []
+    }));
+    
+    return users;
+  } catch (error) {
+    console.error('[Chat Archiver] Get users failed:', error);
+    throw error;
+  }
+}
+
+// Get sessions for a specific user (by userId or username)
+async function handleGetUserSessions(username) {
+  try {
+    const allSessions = await chrome.storage.local.get(['allSessions']);
+    const sessionsList = allSessions.allSessions || [];
+    const userSessions = [];
+    
+    for (const sessionId of sessionsList) {
+      const sessionData = await chrome.storage.local.get([`session_${sessionId}`]);
+      const data = sessionData[`session_${sessionId}`];
+      
+      if (data && data.users && data.users.includes(username)) {
+        userSessions.push({
+          sessionId,
+          url: data.url,
+          lastSynced: data.lastSynced,
+          messageCount: data.messages?.length || 0,
+          participants: data.users
+        });
+      }
+    }
+    
+    return userSessions;
+  } catch (error) {
+    console.error('[Chat Archiver] Get user sessions failed:', error);
+    throw error;
+  }
+}
+
+// Get messages for a specific session
+async function handleGetSessionMessages(sessionId) {
+  try {
+    const sessionData = await chrome.storage.local.get([`session_${sessionId}`]);
+    const data = sessionData[`session_${sessionId}`];
+    
+    if (!data) {
+      throw new Error('Session not found');
+    }
+    
+    return {
+      sessionId: data.sessionId,
+      url: data.url,
+      lastSynced: data.lastSynced,
+      messages: data.messages || [],
+      participants: data.users || []
+    };
+  } catch (error) {
+    console.error('[Chat Archiver] Get session messages failed:', error);
+    throw error;
+  }
+}
+
+// Get user profile (now accepts userId or username)
+async function handleGetUserProfile(username) {
+  try {
+    const profiles = await chrome.storage.local.get(['userProfiles']);
+    const allProfiles = profiles.userProfiles || {};
+    
+    // Try to get profile by userId first, then by username
+    return allProfiles[username] || {
+      username,
+      alias: '',
+      tags: '',
+      notes: '',
+      gender: '',
+      age: '',
+      kinks: ''
+    };
+  } catch (error) {
+    console.error('[Chat Archiver] Get user profile failed:', error);
+    throw error;
+  }
+}
+
+// Update user profile (now uses userId as key)
+async function handleUpdateUserProfile(username, profileData) {
+  try {
+    const profiles = await chrome.storage.local.get(['userProfiles']);
+    const allProfiles = profiles.userProfiles || {};
+    
+    // Use the provided username (which should be the stable userId) as the key
+    allProfiles[username] = {
+      ...allProfiles[username],
+      username,
+      ...profileData
+    };
+    
+    await chrome.storage.local.set({ userProfiles: allProfiles });
+    
+    return allProfiles[username];
+  } catch (error) {
+    console.error('[Chat Archiver] Update user profile failed:', error);
+    throw error;
+  }
+}
+
+// Delete user and all associated data (sessions, messages, profile)
+async function handleDeleteUser(username) {
+  try {
+    // Get all sessions
+    const allSessions = await chrome.storage.local.get(['allSessions']);
+    const sessionsList = allSessions.allSessions || [];
+    
+    // Find all sessions that belong to this user
+    const userSessionIds = [];
+    for (const sessionId of sessionsList) {
+      const sessionData = await chrome.storage.local.get([`session_${sessionId}`]);
+      const data = sessionData[`session_${sessionId}`];
+      
+      if (data && data.users && data.users.includes(username)) {
+        userSessionIds.push(sessionId);
+      }
+    }
+    
+    // Delete all sessions belonging to this user
+    const keysToDelete = userSessionIds.map(id => `session_${id}`);
+    if (keysToDelete.length > 0) {
+      await chrome.storage.local.remove(keysToDelete);
+    }
+    
+    // Update the allSessions list to remove deleted session IDs
+    const remainingSessions = sessionsList.filter(id => !userSessionIds.includes(id));
+    await chrome.storage.local.set({ allSessions: remainingSessions });
+    
+    // Delete user profile
+    const profiles = await chrome.storage.local.get(['userProfiles']);
+    const allProfiles = profiles.userProfiles || {};
+    delete allProfiles[username];
+    await chrome.storage.local.set({ userProfiles: allProfiles });
+    
+    console.log(`[Chat Archiver] Deleted user ${username}: ${userSessionIds.length} session(s) removed`);
+    
+    return {
+      success: true,
+      message: `Deleted user ${username} and ${userSessionIds.length} associated session(s)`,
+      deletedSessionsCount: userSessionIds.length
+    };
+  } catch (error) {
+    console.error('[Chat Archiver] Delete user failed:', error);
+    throw error;
+  }
+}
+
+// Import chat data from manual entry
+async function handleImportChatData(data) {
+  try {
+    const { sessionId, messages } = data;
+    
+    if (!sessionId || !messages) {
+      throw new Error('Invalid import data');
+    }
+    
+    // Store in Chrome storage
+    const storageKey = `session_${sessionId}`;
+    const existingData = await chrome.storage.local.get([storageKey]);
+    
+    const storedMessages = existingData[storageKey] || { messages: [], users: new Set(), userAliases: {} };
+    
+    const allMessages = [...storedMessages.messages];
+    const userSet = new Set(storedMessages.users || []);
+    const userAliases = storedMessages.userAliases || {};
+    
+    messages.forEach(msg => {
+      const exists = allMessages.some(m => m.id === msg.id);
+      if (!exists) {
+        allMessages.push(msg);
+        
+        // Use authorId (stable @username) if available, otherwise fall back to author
+        const userId = msg.authorId || msg.author;
+        if (userId) {
+          userSet.add(userId);
+          
+          // Track the mapping between authorId and display name
+          if (msg.authorId && msg.author) {
+            if (!userAliases[msg.authorId]) {
+              userAliases[msg.authorId] = new Set();
+            }
+            userAliases[msg.authorId].add(msg.author);
+          }
+        } else if (msg.author) {
+          userSet.add(msg.author);
+        }
+      }
+    });
+    
+    // Convert Sets to Arrays for storage
+    const serializedUserAliases = {};
+    Object.keys(userAliases).forEach(key => {
+      serializedUserAliases[key] = Array.from(userAliases[key]);
+    });
+    
+    const sessionData = {
+      sessionId,
+      url: `manual-import-${sessionId}`,
+      lastSynced: new Date().toISOString(),
+      messages: allMessages,
+      users: Array.from(userSet),
+      userAliases: serializedUserAliases
+    };
+    
+    await chrome.storage.local.set({ [storageKey]: sessionData });
+    
+    // Update sessions list
+    const allSessions = await chrome.storage.local.get(['allSessions']);
+    const sessionsList = allSessions.allSessions || [];
+    
+    if (!sessionsList.includes(sessionId)) {
+      sessionsList.push(sessionId);
+      await chrome.storage.local.set({ allSessions: sessionsList });
+    }
+    
+    return {
+      success: true,
+      messageCount: allMessages.length,
+      userCount: userSet.size
+    };
+  } catch (error) {
+    console.error('[Chat Archiver] Import failed:', error);
+    throw error;
+  }
+}
+
+// Export all data (sessions and profiles) for backup/transfer
+async function handleExportAllData() {
+  try {
+    const allSessions = await chrome.storage.local.get(['allSessions']);
+    const sessionsList = allSessions.allSessions || [];
+    
+    const profiles = await chrome.storage.local.get(['userProfiles']);
+    const userProfiles = profiles.userProfiles || {};
+    
+    const exportData = {
+      version: '1.0',
+      exportDate: new Date().toISOString(),
+      sessions: [],
+      userProfiles: userProfiles
+    };
+    
+    // Collect all session data
+    for (const sessionId of sessionsList) {
+      const sessionData = await chrome.storage.local.get([`session_${sessionId}`]);
+      const data = sessionData[`session_${sessionId}`];
+      
+      if (data) {
+        exportData.sessions.push({
+          sessionId: data.sessionId,
+          url: data.url,
+          lastSynced: data.lastSynced,
+          messages: data.messages || [],
+          users: data.users || [],
+          userAliases: data.userAliases || {}
+        });
+      }
+    }
+    
+    return exportData;
+  } catch (error) {
+    console.error('[Chat Archiver] Export failed:', error);
+    throw error;
+  }
+}
+
+// Import exported data from backup file
+async function handleImportExportedData(exportData) {
+  try {
+    if (!exportData || !exportData.sessions || !Array.isArray(exportData.sessions)) {
+      throw new Error('Invalid export data format');
+    }
+    
+    let importedSessions = 0;
+    let importedProfiles = 0;
+    
+    // Import sessions
+    const sessionsList = [];
+    for (const session of exportData.sessions) {
+      const storageKey = `session_${session.sessionId}`;
+      const sessionData = {
+        sessionId: session.sessionId,
+        url: session.url,
+        lastSynced: session.lastSynced,
+        messages: session.messages || [],
+        users: session.users || [],
+        userAliases: session.userAliases || {}
+      };
+      
+      await chrome.storage.local.set({ [storageKey]: sessionData });
+      sessionsList.push(session.sessionId);
+      importedSessions++;
+    }
+    
+    // Update sessions list
+    if (sessionsList.length > 0) {
+      const existingSessions = await chrome.storage.local.get(['allSessions']);
+      const currentList = existingSessions.allSessions || [];
+      
+      // Merge with existing sessions (avoid duplicates)
+      const mergedList = [...new Set([...currentList, ...sessionsList])];
+      await chrome.storage.local.set({ allSessions: mergedList });
+    }
+    
+    // Import user profiles
+    if (exportData.userProfiles && Object.keys(exportData.userProfiles).length > 0) {
+      const existingProfiles = await chrome.storage.local.get(['userProfiles']);
+      const currentProfiles = existingProfiles.userProfiles || {};
+      
+      // Merge profiles (import takes precedence)
+      const mergedProfiles = {
+        ...currentProfiles,
+        ...exportData.userProfiles
+      };
+      
+      await chrome.storage.local.set({ userProfiles: mergedProfiles });
+      importedProfiles = Object.keys(exportData.userProfiles).length;
+    }
+    
+    return {
+      success: true,
+      message: `Successfully imported ${importedSessions} session(s) and ${importedProfiles} profile(s)`,
+      sessionsCount: importedSessions,
+      profilesCount: importedProfiles
+    };
+  } catch (error) {
+    console.error('[Chat Archiver] Import exported data failed:', error);
+    throw error;
+  }
+}

@@ -222,7 +222,7 @@ async function loadUsers() {
         
         li.innerHTML = `
           <div class="user-name">
-            ${displayNameHtml}
+            ${escapeHtml(displayName)}
             ${atUsername ? `<span class="profile-field" title="@username">@${escapeHtml(atUsername.substring(1))}</span>` : ''}
             ${tagFlairsHtml}
             <span class="profile-field" title="Click to edit profile" data-edit-profile="${escapeHtml(user.userId)}">✏️</span>

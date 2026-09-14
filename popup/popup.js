@@ -387,7 +387,7 @@ async function showUserSessions(userId) {
         sessionHeader.style.color = '#667eea';
         sessionHeader.style.fontWeight = '600';
         sessionHeader.style.marginBottom = '8px';
-        sessionHeader.textContent = `Session: ${sessionId.substring(0, 8)}... (${msgs.length} messages)`;
+        sessionHeader.textContent = `Session: ${String(sessionId).substring(0, 8)}... (${msgs.length} messages)`;
         sessionHeader.title = 'Click to view full session';
         sessionHeader.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -470,11 +470,11 @@ async function loadAllSessionsList() {
         return new Date(b.lastSynced) - new Date(a.lastSynced);
       });
       
-      sessionsArray.forEach((session, sessionId) => {
+      sessionsArray.forEach((session) => {
         const li = document.createElement('li');
         li.className = 'session-item';
         li.innerHTML = `
-          <div class="session-title">Session: ${sessionId.substring(0, 8)}...</div>
+          <div class="session-title">Session: ${session.sessionId.substring(0, 8)}...</div>
           <div class="session-meta">
             ${session.participants.length} participant(s) • ${session.messageCount} messages
           </div>
@@ -482,7 +482,7 @@ async function loadAllSessionsList() {
             Participants: ${session.participants.slice(0, 5).join(', ')}${session.participants.length > 5 ? '...' : ''}
           </div>
         `;
-        li.addEventListener('click', () => showSessionMessages(sessionId));
+        li.addEventListener('click', () => showSessionMessages(session.sessionId));
         sessionList.appendChild(li);
       });
     } else {

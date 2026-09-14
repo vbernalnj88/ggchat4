@@ -73,9 +73,14 @@ function setupImportButton() {
     importBtn.addEventListener('click', importChatData);
   }
   
-  const exportBtn = document.getElementById('export-btn');
-  if (exportBtn) {
-    exportBtn.addEventListener('click', exportAllData);
+  const exportAllBtn = document.getElementById('export-all-btn');
+  if (exportAllBtn) {
+    exportAllBtn.addEventListener('click', exportAllData);
+  }
+  
+  const exportMessagesBtn = document.getElementById('export-messages-btn');
+  if (exportMessagesBtn) {
+    exportMessagesBtn.addEventListener('click', exportMessagesBySession);
   }
   
   const importFileBtn = document.getElementById('import-file-btn');
@@ -963,6 +968,79 @@ async function exportAllData() {
   } catch (error) {
     console.error('[Export] Error exporting data:', error);
     alert('Error exporting data: ' + error.message);
+  }
+}
+
+// Export messages by session as text files
+async function exportMessagesBySession() {
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'exportAllData' });
+    
+    if (!response.success) {
+      alert('Error exporting data: ' + response.error);
+      return;
+    }
+    
+    const exportData = response.data;
+    
+    if (!exportData.sessions || exportData.sessions.length === 0) {
+      alert('No sessions to export');
+      return;
+    }
+    
+    let exportedCount = 0;
+    
+    for (const session of exportData.sessions) {
+      let textContent = `Session: ${session.sessionId}\n`;
+      textContent += `URL: ${session.url}\n`;
+      textContent += `Last Synced: ${session.lastSynced}\n`;
+      textContent += '='.repeat(50) + '\n\n';
+      
+      if (!session.messages || session.messages.length === 0) {
+        textContent += 'No messages in this session.\n';
+      } else {
+        // Sort messages by timestamp
+        const sortedMessages = [...session.messages].sort((a, b) => 
+          new Date(a.timestamp) - new Date(b.timestamp)
+        );
+        
+        for (const msg of sortedMessages) {
+          const date = new Date(msg.timestamp).toLocaleString();
+          const author = msg.author || 'Unknown';
+          const content = msg.content || '';
+          
+          textContent += `[${date}] ${author}: ${content}\n`;
+        }
+      }
+      
+      // Create filename from session ID (sanitize for filesystem)
+      const safeSessionId = session.sessionId.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+      const filename = `session_${safeSessionId}.txt`;
+      
+      // Create and download individual file for each session
+      const blob = new Blob([textContent], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      exportedCount++;
+      
+      // Small delay between downloads to avoid browser blocking
+      if (exportedCount < exportData.sessions.length) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+    }
+    
+    console.log('[Export] Successfully exported sessions:', exportedCount);
+    alert(`Exported ${exportedCount} session(s) as text files.`);
+  } catch (error) {
+    console.error('[Export] Error exporting messages by session:', error);
+    alert('Error exporting messages: ' + error.message);
   }
 }
 

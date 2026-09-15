@@ -1007,7 +1007,8 @@ async function exportMessagesBySession() {
         
         for (const msg of sortedMessages) {
           const date = new Date(msg.timestamp).toLocaleString();
-          const author = msg.author || 'Unknown';
+          // For continuation messages, use linkedAuthor; otherwise use author
+          const author = msg.author || msg.linkedAuthor || 'Unknown';
           const content = msg.content || '';
           
           textContent += `[${date}] ${author}: ${content}\n`;
@@ -1024,13 +1025,27 @@ async function exportMessagesBySession() {
     
     // Generate the zip file and download it
     const blob = await zip.generateAsync({ type: 'blob' });
+    
+    // Use chrome.downloads API for reliable downloads in extensions
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'chat_sessions.zip';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    
+    try {
+      await chrome.downloads.download({
+        url: url,
+        filename: 'chat_sessions.zip',
+        saveAs: false
+      });
+    } catch (downloadError) {
+      // Fallback to anchor method if downloads API fails
+      console.warn('[Export] Downloads API failed, using fallback:', downloadError);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'chat_sessions.zip';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+    
     URL.revokeObjectURL(url);
     
     console.log('[Export] Successfully exported sessions:', exportData.sessions.length);

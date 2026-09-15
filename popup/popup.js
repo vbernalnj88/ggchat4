@@ -1007,7 +1007,8 @@ async function exportMessagesBySession() {
         
         for (const msg of sortedMessages) {
           const date = new Date(msg.timestamp).toLocaleString();
-          const author = msg.author || 'Unknown';
+          // For continuation messages, use linkedAuthor; otherwise use author
+          const author = msg.author || msg.linkedAuthor || 'Unknown';
           const content = msg.content || '';
           
           textContent += `[${date}] ${author}: ${content}\n`;

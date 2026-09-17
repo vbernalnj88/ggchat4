@@ -1,13 +1,4 @@
 ```
-# Compiled and build artifacts
-*.pyc
-__pycache__/
-
-# Dependencies
-.venv/
-venv/
-node_modules/
-
 # Logs and temp files
 *.log
 *.tmp
@@ -22,28 +13,37 @@ node_modules/
 .vscode/
 .idea/
 
-# OS generated files
+# Dependencies
+node_modules/
+venv/
+.venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+dist/
+build/
+target/
+.gradle/
+
+# Compiled files
+*.pyc
+*.class
+*.o
+*.exe
+*.dll
+*.so
+*.a
+*.obj
+*.out
+
+# System files
 .DS_Store
 Thumbs.db
 
-# Coverage reports
+# Coverage
 coverage/
 htmlcov/
 .coverage
-
-# Python specific
-*.pyo
-*.pyd
-*.so
-*.egg-info/
-dist/
-build/
-*.egg
-
-# Backup files
-*~
-*.bak
-*.backup
 
 # Compressed files
 *.zip
@@ -68,22 +68,4 @@ build/
 *.tar.bz2
 *.tar.xz
 *.tar.zst
-
-# IDE specific
-.vs/
-.idea/
-*.swp
-*.swo
-
-# MyPy cache
-.mypy_cache/
-# Pytest cache
-.pytest_cache/
-
-# Gradle
-.gradle/
-target/
-
-# Julia
-.julia/
 ```

@@ -1007,9 +1007,8 @@ async function exportMessagesBySession() {
         
         for (const msg of sortedMessages) {
           const date = new Date(msg.timestamp).toLocaleString();
-          // For continuation messages, use linkedAuthorId; otherwise use authorId (username)
-          // Fall back to linkedAuthor or author (display names) if username not available
-          const author = msg.authorId || msg.linkedAuthorId || msg.author || msg.linkedAuthor || 'Unknown';
+          // Use authorId (username) for all messages, including continuation messages
+          const author = msg.authorId || 'Unknown';
           const content = msg.content || '';
           
           textContent += `[${date}] ${author}: ${content}\n`;
@@ -1031,20 +1030,36 @@ async function exportMessagesBySession() {
     const url = URL.createObjectURL(blob);
     
     try {
-      await chrome.downloads.download({
-        url: url,
-        filename: 'chat_sessions.zip',
-        saveAs: false
-      });
+      // Check if downloads API is available
+      if (chrome.downloads && chrome.downloads.download) {
+        await chrome.downloads.download({
+          url: url,
+          filename: 'chat_sessions.zip',
+          saveAs: false
+        });
+        console.log('[Export] Download initiated via Downloads API');
+      } else {
+        throw new Error('Downloads API not available');
+      }
     } catch (downloadError) {
       // Fallback to anchor method if downloads API fails
       console.warn('[Export] Downloads API failed, using fallback:', downloadError);
+      
+      // Create a temporary link and click it
       const a = document.createElement('a');
       a.href = url;
       a.download = 'chat_sessions.zip';
+      a.style.display = 'none';
       document.body.appendChild(a);
       a.click();
-      document.body.removeChild(a);
+      
+      // Clean up after a short delay to ensure download starts
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 1000);
+      
+      return; // Exit early since we handled cleanup in timeout
     }
     
     URL.revokeObjectURL(url);
